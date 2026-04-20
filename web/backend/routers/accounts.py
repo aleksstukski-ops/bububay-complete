@@ -3,11 +3,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 from typing import Optional
-import base64
+from cryptography.fernet import Fernet, InvalidToken
+from config import settings
 from datetime import datetime, timezone
 from models.database import Account, get_session
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
+
+fernet = Fernet(settings.account_credentials_key.encode())
+
+
+def encrypt_secret(value: str) -> str:
+    if not value:
+        return ""
+    return fernet.encrypt(value.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_secret(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        return fernet.decrypt(value.encode("utf-8")).decode("utf-8")
+    except (InvalidToken, ValueError, TypeError):
+        return ""
+
 
 class AccountCreate(BaseModel):
     name: str
@@ -35,7 +54,7 @@ async def create_account(data: AccountCreate, db: AsyncSession = Depends(get_ses
         phone_id=data.phone_id,
         platform=data.platform,
         email=data.email,
-        password_encrypted=base64.b64encode(data.password.encode()).decode() if data.password else "",
+        password_encrypted=encrypt_secret(data.password) if data.password else "",
         location_city=data.location_city,
         location_plz=data.location_plz,
     )
@@ -71,7 +90,7 @@ async def update_account(aid: int, data: AccountUpdate, db: AsyncSession = Depen
         raise HTTPException(404, "Account not found")
     for k, v in data.model_dump(exclude_unset=True).items():
         if k == "password":
-            acc.password_encrypted = base64.b64encode(v.encode()).decode() if v else ""
+            acc.password_encrypted = encrypt_secret(v) if v else ""
         else:
             setattr(acc, k, v)
     await db.commit()

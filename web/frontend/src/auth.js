@@ -4,7 +4,7 @@ function getToken() {
   try { return sessionStorage.getItem(TOKEN_KEY); } catch(e) { return null; }
 }
 
-function setToken(t) {
+export function setToken(t) {
   try { sessionStorage.setItem(TOKEN_KEY, t); } catch(e) {}
 }
 

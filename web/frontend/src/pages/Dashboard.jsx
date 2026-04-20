@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createPortal, flushSync } from 'react-dom'
 import axios from 'axios'
 
@@ -8,7 +8,6 @@ const CACHE_TTL = 5 * 60 * 1000
 export default function Dashboard() {
   const [stats, setStats] = useState(null)
   const [listings, setListings] = useState([])
-  const [loaded, setLoaded] = useState(false)
   const [selectedId, setSelectedId] = useState(null)
   const [detail, setDetail] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -16,11 +15,11 @@ export default function Dashboard() {
   const [saving, setSaving] = useState(false)
   const [saveResult, setSaveResult] = useState(null)
   const [editMode, setEditMode] = useState(false)
+  const [activeAccountId, setActiveAccountId] = useState(null)
 
-  if (!loaded) {
-    setLoaded(true)
+  useEffect(function() {
     load()
-  }
+  }, [])
 
   async function load(forceRefresh) {
     if (!forceRefresh) {
@@ -31,18 +30,44 @@ export default function Dashboard() {
           if (Date.now() - parsed.ts < CACHE_TTL) {
             setStats(parsed.data.stats)
             setListings(parsed.data.listings)
+            setActiveAccountId(parsed.data.activeAccountId || null)
             return
           }
         }
       } catch {}
     }
+
     try {
-      var results = await Promise.all([
-        axios.get('/api/accounts'),
-        axios.get('/api/kleinanzeigen/listings/1').catch(function() { return null })
-      ])
-      var accounts = results[0].data || []
-      var kl = results[1] ? results[1].data : {}
+      var accountsRes = await axios.get('/api/accounts')
+      var accounts = accountsRes.data || []
+      var activeAccount =
+        accounts.find(function(a) { return a.session_active }) ||
+        accounts[0] ||
+        null
+
+      setActiveAccountId(activeAccount ? activeAccount.id : null)
+
+      if (!activeAccount) {
+        var emptyStats = {
+          online: 0,
+          total: 0,
+          followers: 0,
+          rating: '',
+          account: {},
+          accounts: accounts
+        }
+        setStats(emptyStats)
+        setListings([])
+        sessionStorage.setItem(CACHE_KEY, JSON.stringify({
+          data: { stats: emptyStats, listings: [], activeAccountId: null },
+          ts: Date.now()
+        }))
+        return
+      }
+
+      var klRes = await axios.get('/api/kleinanzeigen/listings/' + activeAccount.id).catch(function() { return null })
+      var kl = klRes ? klRes.data : {}
+
       var newStats = {
         online: (kl && kl.stats && kl.stats.online) || 0,
         total: (kl && kl.stats && kl.stats.total) || 0,
@@ -51,16 +76,24 @@ export default function Dashboard() {
         account: (kl && kl.account) || {},
         accounts: accounts
       }
+
       var newListings = (kl && kl.listings) || []
       setStats(newStats)
       setListings(newListings)
-      sessionStorage.setItem(CACHE_KEY, JSON.stringify({ data: { stats: newStats, listings: newListings }, ts: Date.now() }))
+
+      sessionStorage.setItem(CACHE_KEY, JSON.stringify({
+        data: { stats: newStats, listings: newListings, activeAccountId: activeAccount.id },
+        ts: Date.now()
+      }))
     } catch (e) {}
   }
 
   async function openListingDetail(id) {
+    if (!activeAccountId) return
+
     setSelectedId(id)
-    var ck = 'bubuanzeigen_detail_' + id
+    var ck = 'bubuanzeigen_detail_' + activeAccountId + '_' + id
+
     try {
       var cached = sessionStorage.getItem(ck)
       if (cached) {
@@ -72,11 +105,13 @@ export default function Dashboard() {
         }
       }
     } catch {}
+
     setDetailLoading(true)
     setEditMode(false)
     setSaveResult(null)
+
     try {
-      var res = await axios.get('/api/kleinanzeigen/listing/1/' + id)
+      var res = await axios.get('/api/kleinanzeigen/listing/' + activeAccountId + '/' + id)
       if (res.data.success) {
         setDetail(res.data.detail)
         setEditForm(res.data.detail)
@@ -87,24 +122,29 @@ export default function Dashboard() {
     } catch (e) {
       setDetail(null)
     }
+
     setDetailLoading(false)
   }
 
   async function saveListing() {
+    if (!activeAccountId) return
+
     setSaving(true)
     setSaveResult(null)
+
     try {
-      var res = await axios.put('/api/kleinanzeigen/listing/1/' + selectedId, editForm)
+      var res = await axios.put('/api/kleinanzeigen/listing/' + activeAccountId + '/' + selectedId, editForm)
       setSaveResult(res.data)
       if (res.data.success) {
         setEditMode(false)
         setDetail(Object.assign({}, detail, editForm))
         sessionStorage.removeItem(CACHE_KEY)
-        sessionStorage.removeItem('bubuanzeigen_detail_' + selectedId)
+        sessionStorage.removeItem('bubuanzeigen_detail_' + activeAccountId + '_' + selectedId)
       }
     } catch (e) {
       setSaveResult({ success: false, message: 'Fehler beim Speichern' })
     }
+
     setSaving(false)
   }
 
@@ -138,7 +178,6 @@ export default function Dashboard() {
 
   return (
     <div>
-      {/* Header */}
       <div className="flex items-center justify-between mb-4 md:mb-6">
         <div>
           <h1 className="text-xl md:text-2xl font-bold">{'👋'} Hey {stats.account.name || 'Chef'}</h1>
@@ -150,7 +189,6 @@ export default function Dashboard() {
         </button>
       </div>
 
-      {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
         {statCards.map(function(s) {
           return (
@@ -162,7 +200,6 @@ export default function Dashboard() {
         })}
       </div>
 
-      {/* Inserate */}
       <div className="mb-4">
         <h2 className="text-base md:text-lg font-semibold mb-3">{'📋'} Deine Inserate ({listings.length})</h2>
       </div>
@@ -176,7 +213,7 @@ export default function Dashboard() {
               className={'bg-slate-800 rounded-xl p-4 cursor-pointer transition-all hover:ring-2 hover:ring-blue-500 ' + (isActive ? 'ring-2 ring-blue-500' : '')}>
               {l.image && (
                 <div className="mb-2 rounded-lg overflow-hidden bg-slate-700 h-32">
-                  <img src={"/api/img-proxy?url=" + encodeURIComponent(l.image)} alt={l.title} className="w-full h-full object-cover" loading="lazy" />
+                  <img src={'/api/img-proxy?url=' + encodeURIComponent(l.image)} alt={l.title} className="w-full h-full object-cover" loading="lazy" />
                 </div>
               )}
               <div className="flex items-start justify-between gap-2 mb-2">
@@ -194,7 +231,6 @@ export default function Dashboard() {
         })}
       </div>
 
-      {/* FIX 2: CSS-Transform Panel — IMMER im DOM */}
       {createPortal(
         <div
           className="fixed inset-0 z-50 transition-transform duration-200 ease-in-out"
@@ -203,18 +239,14 @@ export default function Dashboard() {
             pointerEvents: selectedId ? 'auto' : 'none'
           }}
         >
-          {/* Backdrop */}
           <div className="absolute inset-0 bg-black/50" onClick={closePanel} />
 
-          {/* Panel mit Flex-Layout */}
           <div className="absolute right-0 top-0 bottom-0 w-full max-w-md bg-slate-900 shadow-2xl flex flex-col" style={{ height: '100dvh' }}>
-            {/* Header - flex-shrink-0 */}
             <div className="flex-shrink-0 p-4 border-b border-slate-700 flex items-center justify-between">
               <h2 className="text-lg font-bold">{'📋'} Inserat-Details</h2>
               <button onClick={closePanel} className="text-slate-400 hover:text-white text-xl">{'✕'}</button>
             </div>
 
-            {/* Scrollbarer Content */}
             <div className="flex-1 overflow-y-auto" style={{ WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
               {selectedId && detailLoading && (
                 <div className="p-8 text-center text-slate-400">{'⏳'} Lade Details...</div>
@@ -260,81 +292,47 @@ export default function Dashboard() {
                       <textarea value={editForm.description || ''} onChange={function(e) { setEditForm(Object.assign({}, editForm, { description: e.target.value })) }} rows={4}
                         className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:border-blue-500 outline-none resize-y" />
                     ) : (
-                      <div className="bg-slate-800 rounded-lg px-3 py-2 text-sm whitespace-pre-wrap max-h-32 overflow-y-auto">{detail.description || 'Keine Beschreibung'}</div>
+                      <div className="bg-slate-800 rounded-lg px-3 py-2 text-sm whitespace-pre-wrap">{detail.description || '-'}</div>
                     )}
                   </div>
 
-                  {detail.location && (
-                    <div><div className="text-xs text-slate-400 mb-1">{'📍'} Ort</div><div className="bg-slate-800 rounded-lg px-3 py-2 text-sm">{detail.location}</div></div>
-                  )}
-
-                  {detail.condition && (
-                    <div><div className="text-xs text-slate-400 mb-1">Zustand</div><div className="bg-slate-800 rounded-lg px-3 py-2 text-sm">{detail.condition}</div></div>
-                  )}
-
-                  {detail.image_count > 0 && (
-                    <div><div className="text-xs text-slate-400 mb-1">Bilder</div><div className="bg-slate-800 rounded-lg px-3 py-2 text-sm">{'🖼️'} {detail.image_count} Bild(er)</div></div>
-                  )}
-
                   {saveResult && (
-                    <div className={'text-sm px-3 py-2 rounded-lg ' + (saveResult.success ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300')}>
-                      {saveResult.success ? '✅' : '❌'} {saveResult.message}
+                    <div className={'rounded-lg px-3 py-2 text-sm ' + (saveResult.success ? 'bg-green-900/50 text-green-300' : 'bg-red-900/50 text-red-300')}>
+                      {saveResult.message || (saveResult.success ? 'Gespeichert' : 'Fehler')}
                     </div>
                   )}
 
-                  <div className="flex gap-2 pt-2">
+                  <div className="flex gap-2">
                     {editMode ? (
-                      <div className="flex gap-2 w-full">
+                      <>
                         <button onClick={saveListing} disabled={saving}
-                          className="flex-1 bg-green-600 hover:bg-green-700 disabled:bg-green-800 text-white py-2 rounded-lg text-sm font-medium">
-                          {saving ? '⏳ Speichere...' : '💾 Speichern'}
+                          className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 text-white py-2.5 rounded-lg font-medium text-sm">
+                          {saving ? 'Speichert...' : 'Speichern'}
                         </button>
-                        <button onClick={function() { setEditMode(false); setEditForm(detail); setSaveResult(null) }}
-                          className="flex-1 bg-slate-700 hover:bg-slate-600 text-slate-300 py-2 rounded-lg text-sm">
+                        <button onClick={function() { setEditMode(false); setEditForm(detail) }}
+                          className="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2.5 rounded-lg text-sm">
                           Abbrechen
                         </button>
-                      </div>
+                      </>
                     ) : (
-                      <button onClick={function() { setEditMode(true); setEditForm(Object.assign({}, detail)) }}
-                        className="flex-1 bg-amber-600 hover:bg-amber-700 text-white py-2 rounded-lg text-sm font-medium">
-                        {'✏️'} Bearbeiten
+                      <button onClick={function() { setEditMode(true) }}
+                        className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-lg font-medium text-sm">
+                        Bearbeiten
                       </button>
                     )}
                   </div>
-
-                  {/* Bottom-Spacer für Mobile */}
-                  <div className="h-24" />
                 </div>
-              )}
-
-              {selectedId && !detailLoading && !detail && (
-                <div className="p-8 text-center text-slate-400">{'❌'} Details konnten nicht geladen werden.</div>
               )}
             </div>
           </div>
         </div>,
         document.body
       )}
-
-      {/* Konto-Info */}
-      <div className="bg-slate-800 rounded-xl p-3 md:p-4 mt-4">
-        <h2 className="text-base font-semibold mb-2">{'📱'} Konto-Info</h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-          <div><div className="text-xs text-slate-400">Name</div><div className="font-medium">{stats.account.name}</div></div>
-          <div><div className="text-xs text-slate-400">E-Mail</div><div className="font-medium text-xs truncate">{stats.account.email}</div></div>
-          <div><div className="text-xs text-slate-400">Aktiv seit</div><div className="font-medium">{stats.account.active_since}</div></div>
-          <div><div className="text-xs text-slate-400">Plattform</div><div className="font-medium">Kleinanzeigen.de</div></div>
-        </div>
-      </div>
     </div>
   )
 }
 
-function isExpiringSoon(dateStr) {
-  if (!dateStr) return false
-  try {
-    var parts = dateStr.split('.')
-    var d = new Date(parts[2], parts[1] - 1, parts[0])
-    return (d - new Date()) / (1000 * 60 * 60 * 24) <= 7
-  } catch (e) { return false }
+function isExpiringSoon(endsText) {
+  if (!endsText) return false
+  return endsText.toLowerCase().includes('heute') || endsText.toLowerCase().includes('morgen')
 }
