@@ -38,7 +38,7 @@ async def get_session():
 from models import database
 database.get_session = get_session
 
-from routers import accounts, products, listing, analytics, kleinanzeigen
+from routers import accounts, products, listing, analytics, kleinanzeigen, product_masters
 
 from starlette.requests import Request
 
@@ -53,6 +53,7 @@ app.include_router(products.router)
 app.include_router(listing.router)
 app.include_router(analytics.router)
 app.include_router(kleinanzeigen.router)
+app.include_router(product_masters.router)
 
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
